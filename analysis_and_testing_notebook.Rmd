@@ -1,0 +1,305 @@
+---
+title: "analysis_and_testing_notebook"
+author: "John Bica"
+date: "3/15/2021"
+output: html_document
+---
+
+```{r packages, include=FALSE}
+
+library(dplyr)
+library(ggplot2)
+library(ggpubr)
+library(lubridate)
+library(stringr)
+library(tidyr)
+library(zoo)
+
+
+packages <- c('dplyr', 'ggplot2', 'ggpubr', 'lubridate',  'stringr', 'tidyr', 'zoo')
+loaded_packages <- sapply(packages, require, character.only = TRUE)
+
+loaded_packages
+```
+
+
+
+```{r}
+df <- read.csv('data/premier_league_matches.csv') %>% mutate(date = lubridate::as_date(date))
+df
+```
+
+```{r}
+# matches with limited attendance (2,000 fans) in December 2020
+limited_fans_matches <- c(59005, 58999,  59003, 59000, 58997, 59008, 59014, 59007, 59009, 59006, 59024, 59033, 59030, 59026, 59041)
+
+# filter out matches with limited fans 
+df <- df %>% subset(!match_id %in% limited_fans_matches)
+```
+
+
+```{r}
+
+# define function for counting goals in each time interval 
+computeGoalsInterval <- function(minutes, min, max){
+  if (is.na(minutes)){
+    return(as.integer(0))
+  }
+  minutes <- as.integer(unlist(strsplit(minutes, ',')))
+  goal_count <- 0
+  for (m in minutes) {
+    if (m >= min & m <= max){
+      goal_count <- goal_count + 1
+    }
+  }
+  return(as.integer(goal_count))
+}
+
+# change possession and goal columns
+df <- df %>% 
+          mutate(home_possession = home_possession/100,
+                 away_possession = away_possession/100,
+                 home_goals_mins = c(str_replace_all(str_sub(home_goals_mins, 2, -2), fixed(" "), "")),
+                 away_goals_mins = c(str_replace_all(str_sub(away_goals_mins, 2, -2), fixed(" "), ""))) %>%
+          mutate(across(c('home_goals_mins', 'away_goals_mins'), ~ifelse(.=="", NA, as.character(.))))
+
+# add columns for goals scored in various intervals of time
+df <- df %>% 
+        rowwise() %>% 
+        mutate(home_first25min = computeGoalsInterval(home_goals_mins, 0, 25),
+               away_first25min = computeGoalsInterval(away_goals_mins, 0, 25),
+               home_26min_to_half = computeGoalsInterval(home_goals_mins, 26, 45),
+               away_26min_to_half = computeGoalsInterval(away_goals_mins, 26, 45),
+               home_half_to_69min = computeGoalsInterval(home_goals_mins, 46, 69),
+               away_half_to_69min = computeGoalsInterval(away_goals_mins, 46, 69),
+               home_last20min = computeGoalsInterval(home_goals_mins, 70, 90),
+               away_last20min = computeGoalsInterval(away_goals_mins, 70, 90),
+               home_first5min_1sthalf = computeGoalsInterval(home_goals_mins, 0, 5),
+               away_first5min_1sthalf = computeGoalsInterval(away_goals_mins, 0, 5),
+               home_last5min_1sthalf = computeGoalsInterval(home_goals_mins, 41, 45),
+               away_last5min_1sthalf = computeGoalsInterval(away_goals_mins, 41, 45),
+               home_first5min_2ndhalf = computeGoalsInterval(home_goals_mins, 46, 50),
+               away_first5min_2ndhalf = computeGoalsInterval(away_goals_mins,46, 50),
+               home_last5min_2ndhalf = computeGoalsInterval(home_goals_mins, 86, 90),
+               away_last5min_2ndhalf = computeGoalsInterval(away_goals_mins,86, 90)) %>% 
+        ungroup()
+
+# add columns for foul distribution
+df <- df  %>% mutate(home_yellow_cards_pct = home_yellow_cards / (home_yellow_cards + away_yellow_cards),
+                     away_yellow_cards_pct = away_yellow_cards / (home_yellow_cards + away_yellow_cards),
+                     home_fouls_conceded_pct = home_fouls_conceded / (home_fouls_conceded + away_fouls_conceded),
+                     away_fouls_conceded_pct = away_fouls_conceded / (home_fouls_conceded + away_fouls_conceded)) 
+
+```
+
+
+
+
+
+```{r}
+# create columns for points won by home/away teams
+df <- df %>% 
+  mutate(home_yellow_cards_pct = home_yellow_cards / (home_yellow_cards + away_yellow_cards),
+         away_yellow_cards_pct = away_yellow_cards / (home_yellow_cards + away_yellow_cards),
+         home_fouls_conceded_pct = home_fouls_conceded / (home_fouls_conceded + away_fouls_conceded),
+         away_fouls_conceded_pct = away_fouls_conceded / (home_fouls_conceded + away_fouls_conceded),
+         home_points_won = ifelse(home_ft_score > away_ft_score, 3, ifelse(home_ft_score == away_ft_score, 1, 0)),
+         away_points_won = ifelse(away_ft_score > home_ft_score, 3, ifelse(away_ft_score == home_ft_score, 1, 0)),
+         home_result = ifelse(home_ft_score > away_ft_score, 'W', ifelse(home_ft_score == away_ft_score, 'D', 'L')),
+         away_result = ifelse(away_ft_score > home_ft_score, 'W', ifelse(away_ft_score == home_ft_score, 'D', 'L')))
+```
+
+
+
+```{r}
+# create control and test data sets
+no_fans_df <- df %>% filter(date >= '2020-06-17') %>% arrange(date) %>% head(288)
+no_fans_df['fans_present'] <- 'N'
+
+fans_df <- df %>% filter(date <= '2020-03-09')   # default 288 
+fans_df['fans_present'] <- 'Y'
+
+nrow(no_fans_df)
+nrow(fans_df)
+
+matches_df <- rbind(fans_df, no_fans_df)
+```
+
+
+```{r EDA histogram}
+home_goal_minutes_fans <- as.numeric(na.omit(unlist(strsplit(fans_df$home_goals_mins, ','))))
+away_goal_minutes_fans <- as.numeric(na.omit(unlist(strsplit(fans_df$away_goals_mins, ','))))
+home_goal_minutes_no_fans <- as.numeric(na.omit(unlist(strsplit(no_fans_df$home_goals_mins, ','))))
+away_goal_minutes_no_fans <- as.numeric(na.omit(unlist(strsplit(no_fans_df$away_goals_mins, ','))))
+hgf <- gghistogram(home_goal_minutes_fans, bins = 18, color = 'darkgreen', fill = 'darkgreen', xlab = 'Minute', ylab = 'Goals', title = 'Home goals with fans')
+hgnf <- gghistogram(home_goal_minutes_no_fans, bins = 18, color = 'darkgreen', fill = 'darkgreen', xlab = 'Minute', ylab = 'Goals', title = 'Home goals without fans')
+agf <- gghistogram(away_goal_minutes_fans, bins = 18, color = 'red', fill = 'red', xlab = 'Minute', ylab = 'Goals', title = 'Away goals with fans')
+agnf <- gghistogram(away_goal_minutes_no_fans, bins = 18, color = 'red', fill = 'red', xlab = 'Minute', ylab = 'Goals', title = 'Away goals without fans')
+ggarrange(hgf, agf, hgnf, agnf,
+          nrow = 2,
+          ncol = 2)
+```
+
+
+```{r EDA scatterplots}
+
+fans_home_win_avg <- sum(fans_df$home_points_won) / (3*nrow(fans_df))
+no_fans_home_win_avg <- sum(no_fans_df$home_points_won) / (3*nrow(no_fans_df))
+
+# home win adv over time
+matches_df %>% 
+ mutate(mth_yr = as.yearmon(date, '%b %Y')) %>% 
+ group_by(mth_yr, fans_present) %>% 
+ summarise(home_win_pct = sum(home_points_won) / (3*n())) %>%
+ ggplot + aes(x = mth_yr, y = home_win_pct, color = fans_present) + 
+ geom_point() + 
+ geom_hline(yintercept = fans_home_win_avg, linetype = 'dashed',   
+            color = 'cyan' ) +
+ geom_hline(yintercept = no_fans_home_win_avg, linetype = 'dashed',  
+            color = 'red') +
+ labs(x='Months', y='Home Advantage % ', color='Fans Present')+
+ theme_classic()
+ 
+# home goals in first 5 minutes over time
+matches_df %>% 
+  mutate(mth_yr = as.yearmon(date, '%b %Y')) %>% 
+  group_by(mth_yr, fans_present) %>% 
+  summarise(home_first5min_goals_pct = sum(home_first5min_1sthalf) / sum(home_ft_score)) %>%
+  ggplot + aes(x = mth_yr, y = home_first5min_goals_pct, color = fans_present) + 
+  geom_point() 
+
+
+fans_away_yc_avg <- sum(fans_df$away_yellow_cards) / sum(fans_df$away_yellow_cards + fans_df$home_yellow_cards)
+no_fans_away_yc_avg <- sum(no_fans_df$away_yellow_cards) / sum(no_fans_df$away_yellow_cards + no_fans_df$home_yellow_cards)
+
+# away yellow cards over time
+matches_df %>% 
+  mutate(mth_yr = as.yearmon(date, '%b %Y')) %>% 
+  group_by(mth_yr, fans_present) %>% 
+  summarise(away_yellow_cards_pct = sum(away_yellow_cards) / sum(away_yellow_cards + home_yellow_cards)) %>%
+  ggplot + aes(x = mth_yr, y =away_yellow_cards_pct, color = fans_present) + 
+  geom_point() +
+  geom_hline(yintercept = fans_away_yc_avg, linetype = 'dashed', color = 'cyan' ) +
+  geom_hline(yintercept = no_fans_away_yc_avg, linetype = 'dashed', color = 'red') +
+  labs(x = 'Months', y ='Away Yellow Cards % ', color = 'Fans Present') +
+  theme_classic()
+
+fans_home_shots_avg <- sum(fans_df$home_shots_on_target) / sum(fans_df$home_shots)
+no_fans_home_shots_avg <- sum(no_fans_df$home_shots_on_target) / sum(no_fans_df$home_shots)
+
+# home shots on target over time
+matches_df %>% 
+ mutate(mth_yr = as.yearmon(date, '%b %Y')) %>% 
+ group_by(mth_yr, fans_present) %>% 
+ summarise(home_shots_target_pct = sum(home_shots_on_target) / sum(home_shots)) %>%
+ ggplot + aes(x = mth_yr, y = home_shots_target_pct, color = fans_present) + 
+ geom_point() + 
+ geom_hline(yintercept = fans_home_shots_avg, linetype = 'dashed',   
+            color = 'cyan' ) +
+ geom_hline(yintercept = no_fans_home_shots_avg, linetype = 'dashed',  
+            color = 'red') +
+ labs(x='Months', y='Home Shots On Target % ', color='Fans Present')+
+ theme_classic()
+
+# home fouls conceded over time
+matches_df %>% 
+  mutate(mth_yr = as.yearmon(date, '%b %Y')) %>% 
+  group_by(mth_yr, fans_present) %>% 
+  summarise(home_fouls_pct = sum(home_fouls_conceded) / sum(home_fouls_conceded + away_fouls_conceded)) %>%
+  ggplot + aes(x = mth_yr, y = home_fouls_pct, color = fans_present) + 
+  geom_point() 
+
+
+# home fouls conceded over time
+matches_df %>% 
+  mutate(mth_yr = as.yearmon(date, '%b %Y')) %>% 
+  group_by(mth_yr, fans_present) %>% 
+  summarise(home_fouls_pct = sum(home_fouls_conceded) / sum(home_fouls_conceded + away_fouls_conceded)) %>%
+  ggplot + aes(x = mth_yr, y = home_fouls_pct, color = fans_present) + 
+  geom_point() 
+```
+
+```{r EDA bar plots}
+
+# home results
+matches_df %>% 
+  group_by(fans_present) %>% 
+  ggplot + 
+  aes(x = fans_present, fill = fans_present) +
+  geom_bar(width = 0.5) + 
+  facet_grid(. ~ home_result) + 
+  labs(title = 'Home Team Match Results', x = NULL, y = 'Matches',    
+       fill = 'Fans Present') + 
+  guides(x = 'none') + 
+  theme_bw()
+
+  
+# home shots
+matches_df %>% 
+  group_by(fans_present) %>% 
+  summarise(total = sum(home_shots)) %>% 
+  ggplot + 
+  aes(x = fans_present, y = total, fill = fans_present) + 
+  geom_bar(stat='identity', width=0.5) +
+  labs(title = 'Home Team Shots Taken', x = NULL, y = 'Matches',    
+       fill = 'Fans Present') + 
+  theme_bw() +
+  coord_flip()
+```
+
+```{r power tests}
+library(pwr)
+
+# means of points won by home team
+meanF <- mean(fans_df$home_points_won)
+meanNF <- mean(no_fans_df$home_points_won)
+sd <- sd(matches_df$home_points_won)
+effect_size <- (meanF - meanNF) / sd
+pwr.t.test(n = 288, d = effect_size, sig.level = 0.1, power = NULL, type = "two.sample") 
+
+# means of yellow_cards conceded by away team
+meanF <- mean(fans_df$away_yellow_cards)
+meanNF <- mean(no_fans_df$away_yellow_cards)
+sd <- sd(matches_df$away_yellow_cards)
+
+effect_size <- (meanF - meanNF) / sd
+pwr.t.test(n = 288, d = effect_size, sig.level = 0.1, power = NULL, type = "two.sample")
+
+# means of fouls conceded by home team
+meanF <- mean(fans_df$home_fouls_conceded)
+meanNF <- mean(no_fans_df$home_fouls_conceded)
+sd <- sd(matches_df$home_fouls_conceded)
+
+effect_size <- (meanF - meanNF) / sd
+pwr.t.test(n = 288, d = effect_size, sig.level = 0.1, power = NULL, type = "two.sample")
+
+# mean shots taken by home team
+meanF <- mean(fans_df$home_shots)
+meanNF <- mean(no_fans_df$home_shots)
+sd <- sd(matches_df$home_shots)
+
+effect_size <- (meanF - meanNF) / sd
+pwr.t.test(n = 288, d = effect_size, sig.level = 0.1, power = NULL, type = "two.sample")
+```
+
+```{r Hypothesis Testing}
+
+# HO: true difference in points won by home team is 0
+# H1: true difference in points won by home team is not equal to 0
+t.test(fans_df$home_points_won, y=no_fans_df$home_points_won, alternative = 'two.sided', conf.level=0.90)
+
+# HO: true difference in means of yellow cards received by away team is 0
+# H1: true difference in means of yellow cards received by away team is not equal to 0
+t.test(fans_df$away_yellow_cards, y=no_fans_df$away_yellow_cards, alternative = 'two.sided', conf.level=0.95)
+
+# HO: true difference in means of fouls conceded by home team is 0
+# H1: true difference in means of fouls conceded by home team is not equal to 0
+t.test(fans_df$home_fouls_conceded, y=no_fans_df$home_fouls_conceded, alternative = 'two.sided', conf.level=0.95)
+
+# HO: true difference in means shots taken by home team is 0
+# H1: true difference in means of shots taken by home team is not equal to 0
+t.test(fans_df$home_shots, y=no_fans_df$home_shots, alternative = 'two.sided', conf.level=0.95)
+```
+
+
+
