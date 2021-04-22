@@ -23,7 +23,7 @@ stats_check = ['possession_%', 'shots_on_target', 'shots', 'touches', 'passes',
 #  59174 - last match available in 20-21 season (3/15/21)
 
 
-for id in tqdm(range(46605, 45984 + 1)):
+for id in tqdm(range(46605, 59174 + 1)):
     # opening the connection and grabbing the page
     my_url = f'https://www.premierleague.com/match/{id}'
     option = Options()
